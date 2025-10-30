@@ -1,14 +1,23 @@
 import os
+import subprocess
+
+# ---- Install Real-ESRGAN dynamically (before anything imports it) ----
+try:
+    import realesrgan
+except ImportError:
+    print("💖 Installing Real-ESRGAN dynamically... please wait 💖")
+    subprocess.run(
+        [
+            "pip",
+            "install",
+            "git+https://github.com/xinntao/Real-ESRGAN.git@fa4c8a03ae3dbc9ea6ed471a6ab5da94ac15c2ea"
+        ],
+        check=True,
+    )
+
+# ---- Now import FastAPI and your routes ----
 from fastapi import FastAPI
 from routes import photo, video, subtitles, remove_bg, crop
-
-# 🪄 Force-install Real-ESRGAN + BasicSR at runtime (for Render free tier)
-# This avoids build errors during deploy.
-try:
-    os.system("pip install git+https://github.com/xinntao/BasicSR.git@master --no-cache-dir || true")
-    os.system("pip install git+https://github.com/xinntao/Real-ESRGAN.git@fa4c8a03ae3dbc9ea6ed471a6ab5da94ac15c2ea --no-cache-dir || true")
-except Exception as e:
-    print("⚠️ Warning: Failed to install Real-ESRGAN packages:", e)
 
 app = FastAPI(title="AI Enhancer App")
 
@@ -24,5 +33,5 @@ async def root():
     return {"message": "AI Enhancer Backend is running 💖"}
 
 @app.get("/healthz")
-async def health_check():
+async def healthz():
     return {"status": "ok"}
