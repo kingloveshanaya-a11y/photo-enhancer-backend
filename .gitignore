@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+venv311/
+venv/
+.env/
+
+# Large model files
+weights/
+*.pth
+*.pt
+
+# Other
+.DS_Store
+.idea/
+.vscode/
