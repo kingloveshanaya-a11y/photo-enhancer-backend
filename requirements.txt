@@ -5,4 +5,4 @@ pillow
 opencv-python
 torch
 numpy
-git+https://github.com/xinntao/Real-ESRGAN.git@v0.3.0
+# realesrgan will be installed from Dockerfile to fix build issues
