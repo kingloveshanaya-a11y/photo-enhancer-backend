@@ -19,19 +19,22 @@ if not os.path.isfile(MODEL_PATH):
     raise FileNotFoundError(f"RealESRGAN weights not found at {MODEL_PATH}.")
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
+use_half = True if device == "cuda" else False
 
+# Load model once at startup
 model = RRDBNet(
     num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4
 )
 
+# Tile-based enhancement for full-resolution
 upsampler = RealESRGANer(
     scale=4,
     model_path=MODEL_PATH,
     model=model,
-    tile=0,
-    tile_pad=10,
+    tile=512,        # smaller tiles reduce GPU memory load
+    tile_pad=10,     # overlap to avoid seams
     pre_pad=0,
-    half=False,
+    half=use_half,
     device=device
 )
 
@@ -42,7 +45,7 @@ async def enhance_photo(file: UploadFile = File(...)):
         input_image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         input_np = np.array(input_image)
 
-        # Enhance image
+        # Enhance image using tiles (full resolution)
         result = upsampler.enhance(input_np, outscale=4)
 
         # Handle both 2-tuple or 3-tuple return

@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+python-multipart
+pillow
+opencv-python
+torch
+numpy
+# realesrgan must be installed via git, cannot install from PyPI
+# git+https://github.com/xinntao/Real-ESRGAN.git
