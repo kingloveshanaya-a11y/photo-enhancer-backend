@@ -1,29 +1,34 @@
-# Use Python 3.11 (compatible with Real-ESRGAN)
+# Use Python 3.11 (stable for Real-ESRGAN)
 FROM python:3.11-slim
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git ffmpeg libgl1 libglib2.0-0 && \
+    rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    git \
-    build-essential \
-    libgl1-mesa-glx \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy requirements and install Python packages
-COPY requirements.txt .
-RUN pip install --upgrade pip
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Install Real-ESRGAN from GitHub (specific commit for stability)
-RUN pip install git+https://github.com/xinntao/Real-ESRGAN.git@fa4c8a03ae3dbc9ea6ed471a6ab5da94ac15c2ea
-
-# Copy app code
+# Copy project files
 COPY . .
 
-# Expose port (Render uses this port)
+# Upgrade pip and install build tools
+RUN pip install --upgrade pip setuptools wheel
+
+# Install Real-ESRGAN dependencies first
+RUN pip install basicsr==1.4.2 gfpgan==1.3.8
+
+# Install all other dependencies
+RUN pip install -r requirements.txt
+
+# Optional: latest Real-ESRGAN
+RUN pip install git+https://github.com/ai-forever/Real-ESRGAN.git
+
+# Expose the Render port
 EXPOSE 10000
 
-# Start command for Uvicorn
+# Run the FastAPI app
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "10000"]
