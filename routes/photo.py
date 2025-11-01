@@ -15,8 +15,8 @@ router = APIRouter()
 
 # === CONFIG ===
 WEIGHTS_DIR = "weights"
-MODEL_PATH = os.path.join(WEIGHTS_DIR, "RealESRGAN_x4.pth")
-MODEL_URL = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/RealESRGAN_x4.pth"
+MODEL_PATH = os.path.join(WEIGHTS_DIR, "RealESRGAN_x4plus.pth")
+MODEL_URL = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5/RealESRGAN_x4plus.pth"
 
 # === GLOBALS ===
 upsampler = None
@@ -26,8 +26,9 @@ download_thread = None
 def download_weights():
     """Download model weights if missing."""
     if os.path.exists(MODEL_PATH):
+        print("✅ RealESRGAN weights already present.")
         return
-    print("💖 Downloading RealESRGAN weights...")
+    print("💖 Downloading RealESRGAN weights... Please wait 💖")
     os.makedirs(WEIGHTS_DIR, exist_ok=True)
     try:
         with requests.get(MODEL_URL, stream=True, timeout=60) as r:
@@ -35,7 +36,7 @@ def download_weights():
             with open(MODEL_PATH, "wb") as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
-        print("✅ RealESRGAN weights ready!")
+        print("✅ RealESRGAN weights downloaded successfully!")
     except Exception as e:
         print(f"⚠️ Failed to download weights: {e}")
 
@@ -52,9 +53,15 @@ def init_model():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     use_half = (device == "cuda")
 
+    print(f"🧠 Initializing RealESRGAN model on device: {device}")
+
     model = RRDBNet(
-        num_in_ch=3, num_out_ch=3, num_feat=64,
-        num_block=23, num_grow_ch=32, scale=4
+        num_in_ch=3,
+        num_out_ch=3,
+        num_feat=64,
+        num_block=23,
+        num_grow_ch=32,
+        scale=4
     )
 
     upsampler = RealESRGANer(
@@ -67,7 +74,8 @@ def init_model():
         half=use_half,
         device=device,
     )
-    print("🚀 RealESRGAN model initialized.")
+
+    print("🚀 RealESRGAN model initialized successfully.")
     return upsampler
 
 
@@ -93,25 +101,27 @@ async def enhance_photo(file: UploadFile = File(...)):
         input_image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         input_np = np.array(input_image)
 
-        # Make sure model is ready
+        # Ensure model is ready
         global upsampler
         if upsampler is None:
             upsampler = init_model()
 
+        # Perform enhancement
         result = upsampler.enhance(input_np, outscale=4)
 
-        # Handle RealESRGAN's return type
+        # Handle RealESRGAN's return type (2-tuple or 3-tuple)
         if isinstance(result, tuple):
             output_np = result[0] if len(result) == 2 else result[1]
         else:
             output_np = result
 
-        # Convert to image
+        # Convert numpy → image → bytes
         output_image = Image.fromarray(output_np)
         buf = io.BytesIO()
         output_image.save(buf, format="JPEG")
         buf.seek(0)
 
+        print("✨ Image enhancement successful!")
         return StreamingResponse(buf, media_type="image/jpeg")
 
     except Exception as e:
