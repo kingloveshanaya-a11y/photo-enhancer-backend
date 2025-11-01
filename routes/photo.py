@@ -6,72 +6,108 @@ import io
 import os
 import numpy as np
 import requests
+import threading
+import traceback
 from realesrgan import RealESRGANer
 from basicsr.archs.rrdbnet_arch import RRDBNet
-import traceback
 
 router = APIRouter()
 
-# Paths
+# === CONFIG ===
 WEIGHTS_DIR = "weights"
 MODEL_PATH = os.path.join(WEIGHTS_DIR, "RealESRGAN_x4.pth")
 MODEL_URL = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/RealESRGAN_x4.pth"
 
-# ✅ Auto-download weights if missing
-if not os.path.exists(MODEL_PATH):
-    print("💖 Downloading Real-ESRGAN weights dynamically... please wait 💖")
+# === GLOBALS ===
+upsampler = None
+download_thread = None
+
+
+def download_weights():
+    """Download model weights if missing."""
+    if os.path.exists(MODEL_PATH):
+        return
+    print("💖 Downloading RealESRGAN weights...")
     os.makedirs(WEIGHTS_DIR, exist_ok=True)
-    with requests.get(MODEL_URL, stream=True) as r:
-        r.raise_for_status()
-        with open(MODEL_PATH, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
-    print("✅ Real-ESRGAN weights downloaded successfully!")
+    try:
+        with requests.get(MODEL_URL, stream=True, timeout=60) as r:
+            r.raise_for_status()
+            with open(MODEL_PATH, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+        print("✅ RealESRGAN weights ready!")
+    except Exception as e:
+        print(f"⚠️ Failed to download weights: {e}")
 
-# Device setup
-device = "cuda" if torch.cuda.is_available() else "cpu"
-use_half = True if device == "cuda" else False
 
-# Load model once at startup
-model = RRDBNet(
-    num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4
-)
+def init_model():
+    """Initialize the RealESRGAN model."""
+    global upsampler
+    if upsampler is not None:
+        return upsampler
 
-# Initialize upsampler
-upsampler = RealESRGANer(
-    scale=4,
-    model_path=MODEL_PATH,
-    model=model,
-    tile=512,
-    tile_pad=10,
-    pre_pad=0,
-    half=use_half,
-    device=device
-)
+    if not os.path.exists(MODEL_PATH):
+        download_weights()
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    use_half = (device == "cuda")
+
+    model = RRDBNet(
+        num_in_ch=3, num_out_ch=3, num_feat=64,
+        num_block=23, num_grow_ch=32, scale=4
+    )
+
+    upsampler = RealESRGANer(
+        scale=4,
+        model_path=MODEL_PATH,
+        model=model,
+        tile=512,
+        tile_pad=10,
+        pre_pad=0,
+        half=use_half,
+        device=device,
+    )
+    print("🚀 RealESRGAN model initialized.")
+    return upsampler
+
+
+# === Lazy async init ===
+def background_init():
+    """Non-blocking background model preload."""
+    try:
+        init_model()
+    except Exception as e:
+        print(f"⚠️ Background model init failed: {e}")
+
+
+# Start preloading in background immediately at import
+download_thread = threading.Thread(target=background_init, daemon=True)
+download_thread.start()
+
 
 @router.post("/enhance")
 async def enhance_photo(file: UploadFile = File(...)):
+    """Enhance a photo using RealESRGAN."""
     try:
         img_bytes = await file.read()
         input_image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         input_np = np.array(input_image)
 
-        # Enhance image using tiles
+        # Make sure model is ready
+        global upsampler
+        if upsampler is None:
+            upsampler = init_model()
+
         result = upsampler.enhance(input_np, outscale=4)
 
-        # Handle both 2-tuple or 3-tuple return
+        # Handle RealESRGAN's return type
         if isinstance(result, tuple):
-            if len(result) == 2:
-                output_np, _ = result
-            elif len(result) == 3:
-                _, output_np, _ = result
-            else:
-                raise ValueError("Unexpected return from upsampler.enhance()")
+            output_np = result[0] if len(result) == 2 else result[1]
         else:
             output_np = result
 
+        # Convert to image
         output_image = Image.fromarray(output_np)
-
         buf = io.BytesIO()
         output_image.save(buf, format="JPEG")
         buf.seek(0)
@@ -79,6 +115,6 @@ async def enhance_photo(file: UploadFile = File(...)):
         return StreamingResponse(buf, media_type="image/jpeg")
 
     except Exception as e:
-        print("Error during image enhancement:")
+        print("❌ Error during image enhancement:")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
