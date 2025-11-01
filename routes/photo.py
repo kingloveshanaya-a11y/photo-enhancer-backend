@@ -15,8 +15,8 @@ router = APIRouter()
 
 # === CONFIG ===
 WEIGHTS_DIR = "weights"
-MODEL_PATH = os.path.join(WEIGHTS_DIR, "RealESRGAN_x4plus.pth")
-MODEL_URL = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/RealESRGAN_x4plus.pth"
+MODEL_PATH = os.path.join(WEIGHTS_DIR, "RealESRGAN_x4.pth")
+MODEL_URL = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/RealESRGAN_x4.pth"
 
 # === GLOBALS ===
 upsampler = None
