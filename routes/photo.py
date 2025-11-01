@@ -15,8 +15,9 @@ router = APIRouter()
 
 # === CONFIG ===
 WEIGHTS_DIR = "weights"
-MODEL_PATH = os.path.join(WEIGHTS_DIR, "RealESRGAN_x4.pth")
-MODEL_URL = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/RealESRGAN_x4.pth"
+MODEL_FILENAME = "RealESRGAN_x4plus.pth"
+MODEL_PATH = os.path.join(WEIGHTS_DIR, MODEL_FILENAME)
+MODEL_URL = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5/RealESRGAN_x4plus.pth"
 
 # === GLOBALS ===
 upsampler = None
@@ -28,8 +29,10 @@ def download_weights():
     if os.path.exists(MODEL_PATH):
         print("✅ RealESRGAN weights already present.")
         return
+
     print("💖 Downloading RealESRGAN weights... Please wait 💖")
     os.makedirs(WEIGHTS_DIR, exist_ok=True)
+
     try:
         with requests.get(MODEL_URL, stream=True, timeout=60) as r:
             r.raise_for_status()
@@ -39,6 +42,7 @@ def download_weights():
         print("✅ RealESRGAN weights downloaded successfully!")
     except Exception as e:
         print(f"⚠️ Failed to download weights: {e}")
+        raise
 
 
 def init_model():
@@ -61,7 +65,7 @@ def init_model():
         num_feat=64,
         num_block=23,
         num_grow_ch=32,
-        scale=4
+        scale=4,
     )
 
     upsampler = RealESRGANer(
@@ -86,6 +90,7 @@ def background_init():
         init_model()
     except Exception as e:
         print(f"⚠️ Background model init failed: {e}")
+        traceback.print_exc()
 
 
 # Start preloading in background immediately at import
