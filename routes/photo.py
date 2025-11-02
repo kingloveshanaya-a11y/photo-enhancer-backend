@@ -35,13 +35,12 @@ def init_model():
 
     print(f"🧠 Initializing RealESRGAN model on device: {device}")
 
-    # Correct architecture for RealESRGAN_x4plus.pth
     model = RRDBNet(
         num_in_ch=3,
         num_out_ch=3,
         num_feat=64,
-        num_block=23,   # Must be 23 blocks
-        num_grow_ch=32, # Must be 32 growth channels
+        num_block=23,
+        num_grow_ch=32,
         scale=4,
     )
 
@@ -59,17 +58,15 @@ def init_model():
     print("🚀 RealESRGAN model initialized successfully.")
     return upsampler
 
-
-# Optional: Initialize model at startup to avoid delay on first request
-@app.on_event("startup")
+# ✅ Router startup event
+@router.on_event("startup")
 def startup_event():
     global upsampler
     try:
         upsampler = init_model()
-    except Exception as e:
+    except Exception:
         print("❌ Failed to initialize RealESRGAN model at startup:")
         traceback.print_exc()
-
 
 @router.post("/enhance")
 async def enhance_photo(
@@ -79,26 +76,19 @@ async def enhance_photo(
         description="Denoise strength for v3 model (0=weak, 1=strong)"
     )
 ):
-    """
-    Enhance a photo using RealESRGAN with optional denoise strength.
-    Returns the enhanced image in JPEG format.
-    """
+    """Enhance a photo using RealESRGAN with optional denoise strength."""
     try:
-        # Read image from upload
         img_bytes = await file.read()
         input_image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         input_np = np.array(input_image)
 
-        # Ensure model is initialized
         global upsampler
         if upsampler is None:
             upsampler = init_model()
 
-        # Perform enhancement
         result = upsampler.enhance(input_np, outscale=4, denoise=denoise)
         output_np = result[0] if isinstance(result, tuple) else result
 
-        # Convert back to PIL Image
         output_image = Image.fromarray(output_np)
         buf = io.BytesIO()
         output_image.save(buf, format="JPEG")
