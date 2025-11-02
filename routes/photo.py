@@ -13,11 +13,11 @@ router = APIRouter()
 
 # === CONFIG ===
 WEIGHTS_DIR = "weights"
-MODEL_FILENAME = "realesr-general-x4v3.pth"
+MODEL_FILENAME = "RealESRGAN_x4plus.pth"
 MODEL_PATH = os.path.join(WEIGHTS_DIR, MODEL_FILENAME)
 
-# === GLOBALS ===
-upsampler = None
+# === GLOBAL MODEL INSTANCE ===
+upsampler: RealESRGANer | None = None
 
 def init_model():
     """Initialize the RealESRGAN model."""
@@ -26,19 +26,22 @@ def init_model():
         return upsampler
 
     if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError(f"Model weights not found: {MODEL_PATH}. They should be pre-downloaded.")
+        raise FileNotFoundError(
+            f"Model weights not found: {MODEL_PATH}. Please download them first."
+        )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    use_half = (device == "cuda")
+    use_half = device == "cuda"
 
     print(f"🧠 Initializing RealESRGAN model on device: {device}")
 
+    # Correct architecture for RealESRGAN_x4plus.pth
     model = RRDBNet(
         num_in_ch=3,
         num_out_ch=3,
         num_feat=64,
-        num_block=23,
-        num_grow_ch=32,
+        num_block=23,   # Must be 23 blocks
+        num_grow_ch=32, # Must be 32 growth channels
         scale=4,
     )
 
@@ -57,32 +60,45 @@ def init_model():
     return upsampler
 
 
+# Optional: Initialize model at startup to avoid delay on first request
+@app.on_event("startup")
+def startup_event():
+    global upsampler
+    try:
+        upsampler = init_model()
+    except Exception as e:
+        print("❌ Failed to initialize RealESRGAN model at startup:")
+        traceback.print_exc()
+
+
 @router.post("/enhance")
 async def enhance_photo(
     file: UploadFile = File(...),
-    denoise: float = Query(0.5, ge=0.0, le=1.0, description="Denoise strength for v3 model (0=weak, 1=strong)")
+    denoise: float = Query(
+        0.5, ge=0.0, le=1.0,
+        description="Denoise strength for v3 model (0=weak, 1=strong)"
+    )
 ):
-    """Enhance a photo using RealESRGAN with optional denoise strength."""
+    """
+    Enhance a photo using RealESRGAN with optional denoise strength.
+    Returns the enhanced image in JPEG format.
+    """
     try:
+        # Read image from upload
         img_bytes = await file.read()
         input_image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         input_np = np.array(input_image)
 
-        # Ensure model is ready
+        # Ensure model is initialized
         global upsampler
         if upsampler is None:
             upsampler = init_model()
 
         # Perform enhancement
         result = upsampler.enhance(input_np, outscale=4, denoise=denoise)
+        output_np = result[0] if isinstance(result, tuple) else result
 
-        # Handle RealESRGAN's return type
-        if isinstance(result, tuple):
-            output_np = result[0] if len(result) == 2 else result[1]
-        else:
-            output_np = result
-
-        # Convert numpy → image → bytes
+        # Convert back to PIL Image
         output_image = Image.fromarray(output_np)
         buf = io.BytesIO()
         output_image.save(buf, format="JPEG")
