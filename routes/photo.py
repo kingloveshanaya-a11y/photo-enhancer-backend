@@ -9,7 +9,6 @@ import traceback
 import cv2
 import urllib.request
 from realesrgan import RealESRGANer
-from basicsr.archs.rrdbnet_arch import RRDBNet
 
 router = APIRouter()
 
@@ -57,7 +56,7 @@ def ensure_model_exists(model_type: str):
 
 
 def init_model(model_type: str):
-    """Initialize a RealESRGAN model."""
+    """Initialize a RealESRGAN model safely (auto-detect architecture)."""
     global upsamplers
     if upsamplers.get(model_type):
         return upsamplers[model_type]
@@ -66,21 +65,22 @@ def init_model(model_type: str):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     use_half = device == "cuda"
 
-    print(f"🧠 Initializing RealESRGAN '{model_type}' on {device}...")
+    print(f"🧠 Initializing RealESRGAN '{model_type}' model on {device}...")
 
-    model = RRDBNet(
-        num_in_ch=3, num_out_ch=3,
-        num_feat=64, num_block=23, num_grow_ch=32, scale=4,
-    )
-
+    # ✅ Let RealESRGANer choose the correct model architecture
     upsampler = RealESRGANer(
-        scale=4, model_path=model_path, model=model,
-        tile=512, tile_pad=10, pre_pad=0,
-        half=use_half, device=device,
+        scale=4,
+        model_path=model_path,
+        model=None,   # <-- auto architecture selection fix
+        tile=512,
+        tile_pad=10,
+        pre_pad=0,
+        half=use_half,
+        device=device,
     )
 
     upsamplers[model_type] = upsampler
-    print(f"🚀 RealESRGAN '{model_type}' model ready.")
+    print(f"🚀 RealESRGAN '{model_type}' model initialized successfully.")
     return upsampler
 
 
@@ -130,12 +130,12 @@ async def enhance_photo(
 
         # --- Post-processing style tuning ---
         if model_type == "photo":
-            # Soft, realistic, natural beauty tone
+            # Natural, soft, realistic beauty
             output_image = ImageEnhance.Color(output_image).enhance(1.05)
             output_image = ImageEnhance.Contrast(output_image).enhance(1.02)
             output_image = ImageEnhance.Sharpness(output_image).enhance(0.9)
         elif model_type == "anime":
-            # Vivid, crisp, rich color for anime/cartoons
+            # Vibrant, sharp, high-contrast anime look
             output_image = ImageEnhance.Contrast(output_image).enhance(1.15)
             output_image = ImageEnhance.Color(output_image).enhance(1.25)
             output_image = ImageEnhance.Sharpness(output_image).enhance(1.1)
@@ -145,7 +145,7 @@ async def enhance_photo(
         output_image.save(buf, format="JPEG", quality=95)
         buf.seek(0)
 
-        print(f"✨ {model_type.capitalize()} enhancement done at x{scale} scale.")
+        print(f"✨ {model_type.capitalize()} enhancement completed (x{scale}).")
         return StreamingResponse(buf, media_type="image/jpeg")
 
     except Exception as e:
