@@ -8,6 +8,7 @@ import numpy as np
 import traceback
 from realesrgan import RealESRGANer
 from basicsr.archs.rrdbnet_arch import RRDBNet
+import urllib.request
 
 router = APIRouter()
 
@@ -15,9 +16,17 @@ router = APIRouter()
 WEIGHTS_DIR = "weights"
 MODEL_FILENAME = "RealESRGAN_x4plus.pth"
 MODEL_PATH = os.path.join(WEIGHTS_DIR, MODEL_FILENAME)
+MODEL_URL = "https://huggingface.co/ai-forever/Real-ESRGAN/resolve/main/RealESRGAN_x4plus.pth"
 
 # === GLOBAL MODEL INSTANCE ===
 upsampler: RealESRGANer | None = None
+
+def download_model_if_missing():
+    if not os.path.exists(MODEL_PATH):
+        print(f"⚡ Model not found locally. Downloading to {MODEL_PATH} ...")
+        os.makedirs(WEIGHTS_DIR, exist_ok=True)
+        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+        print("✅ Model downloaded successfully.")
 
 def init_model():
     """Initialize the RealESRGAN model."""
@@ -25,16 +34,14 @@ def init_model():
     if upsampler is not None:
         return upsampler
 
-    if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError(
-            f"Model weights not found: {MODEL_PATH}. Please download them first."
-        )
+    download_model_if_missing()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     use_half = device == "cuda"
 
     print(f"🧠 Initializing RealESRGAN model on device: {device}")
 
+    # Correct architecture for RealESRGAN_x4plus.pth
     model = RRDBNet(
         num_in_ch=3,
         num_out_ch=3,
