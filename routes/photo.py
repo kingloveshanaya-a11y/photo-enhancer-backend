@@ -1,154 +1,193 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, UploadFile, File, HTTPException, Query, BackgroundTasks
+from fastapi.responses import StreamingResponse, JSONResponse
 from PIL import Image, ImageEnhance
-import torch
-import io
-import os
-import numpy as np
-import traceback
-import cv2
-import urllib.request
+import torch, io, os, numpy as np, traceback, uuid, asyncio
 from realesrgan import RealESRGANer
+from basicsr.archs.rrdbnet_arch import RRDBNet
 
 router = APIRouter()
 
-# === CONFIG ===
+# === Configuration ===
 WEIGHTS_DIR = "weights"
+PROGRESS = {}  # job_id → progress %
+RESULTS = {}   # job_id → image buffer or error string
+CLEANUP_DELAY = 300  # 5 minutes
+
 MODELS = {
-    "photo": {
-        "file": "realesr-general-x4v3.pth",
-        "url": "https://huggingface.co/ai-forever/Real-ESRGAN/resolve/main/realesr-general-x4v3.pth"
-    },
-    "anime": {
-        "file": "realesr-animevideov3.pth",
-        "url": "https://huggingface.co/ai-forever/Real-ESRGAN/resolve/main/realesr-animevideov3.pth"
-    }
+    "photo":  {"file": "realesr-general-x4v3.pth", "nb": 23},
+    "anime":  {"file": "realesr-animevideov3.pth", "nb": 6},
+    "x4plus": {"file": "RealESRGAN_x4plus.pth",    "nb": 23},
+    "x4":     {"file": "RealESRGAN_x4.pth",        "nb": 23},
 }
 
-# === GLOBAL MODEL INSTANCES ===
-upsamplers = {"photo": None, "anime": None}
+upsamplers = {m: None for m in MODELS}
 
 
-# --- Helper: auto-detect image type ---
-def detect_image_type(img: np.ndarray) -> str:
-    """Auto-detect anime vs photo based on edge and saturation levels."""
-    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-    edges = cv2.Canny(gray, 100, 200)
-    edge_density = np.mean(edges > 0)
-    sat = np.mean(cv2.cvtColor(img, cv2.COLOR_RGB2HSV)[:, :, 1])
-    # Heuristic: anime tends to have sharper edges or higher color saturation
-    if edge_density > 0.08 or sat > 100:
-        return "anime"
-    return "photo"
-
-
-# --- Model management ---
-def ensure_model_exists(model_type: str):
-    """Ensure a RealESRGAN model is downloaded."""
+# === Utility helpers ===
+def ensure_model_exists(model_type: str) -> str:
     os.makedirs(WEIGHTS_DIR, exist_ok=True)
-    model_info = MODELS[model_type]
-    model_path = os.path.join(WEIGHTS_DIR, model_info["file"])
+    model_path = os.path.join(WEIGHTS_DIR, MODELS[model_type]["file"])
     if not os.path.exists(model_path):
-        print(f"⚡ Downloading {model_type} model weights...")
-        urllib.request.urlretrieve(model_info["url"], model_path)
-        print(f"✅ Downloaded {model_path}")
+        raise FileNotFoundError(
+            f"❌ Missing model file: {model_path}\n"
+            f"➡️  Please copy it into your 'weights' folder."
+        )
     return model_path
 
 
 def init_model(model_type: str):
-    """Initialize a RealESRGAN model safely (auto-detect architecture)."""
-    global upsamplers
+    """Lazily initialize a model if not already loaded."""
     if upsamplers.get(model_type):
         return upsamplers[model_type]
 
     model_path = ensure_model_exists(model_type)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     use_half = device == "cuda"
-
     print(f"🧠 Initializing RealESRGAN '{model_type}' model on {device}...")
 
-    # ✅ Let RealESRGANer choose the correct model architecture
+    model = RRDBNet(
+        num_in_ch=3,
+        num_out_ch=3,
+        num_feat=64,
+        num_block=MODELS[model_type]["nb"],
+        num_grow_ch=32,
+        scale=4
+    )
+
     upsampler = RealESRGANer(
         scale=4,
         model_path=model_path,
-        model=None,   # <-- auto architecture selection fix
+        model=model,
         tile=512,
         tile_pad=10,
         pre_pad=0,
         half=use_half,
-        device=device,
+        device=device
     )
 
     upsamplers[model_type] = upsampler
-    print(f"🚀 RealESRGAN '{model_type}' model initialized successfully.")
+    print(f"✅ Model '{model_type}' initialized successfully.")
     return upsampler
 
 
-# === STARTUP EVENT ===
+def detect_image_type(image_np: np.ndarray) -> str:
+    """Rudimentary photo vs. anime detection."""
+    mean_sat = np.mean(image_np.std(axis=2))
+    edges = np.mean(np.abs(np.gradient(image_np.mean(axis=2))))
+    if mean_sat < 25 and edges > 2.0:
+        return "anime"
+    return "photo"
+
+
+async def update_progress(job_id: str, value: int):
+    PROGRESS[job_id] = max(0, min(100, value))
+
+
+async def cleanup_job(job_id: str):
+    """Remove job data from memory after CLEANUP_DELAY seconds."""
+    await asyncio.sleep(CLEANUP_DELAY)
+    PROGRESS.pop(job_id, None)
+    RESULTS.pop(job_id, None)
+    print(f"🧹 Cleaned up job {job_id}.")
+
+
+# === Preload models on startup ===
 @router.on_event("startup")
-def startup_event():
-    """Preload both models at startup for smoother first use."""
-    for model_type in MODELS.keys():
-        try:
-            init_model(model_type)
-        except Exception as e:
-            print(f"⚠️ Could not preload {model_type} model: {e}")
-
-
-# === MAIN ENHANCE ENDPOINT ===
-@router.post("/enhance")
-async def enhance_photo(
-    file: UploadFile = File(...),
-    type: str = Query("auto", description="Image type: 'photo', 'anime', or 'auto'"),
-    scale: int = Query(4, ge=2, le=8, description="Upscale factor (2, 4, or 8)"),
-    denoise: float = Query(0.5, ge=0.0, le=1.0, description="Denoise level (0=weak, 1=strong)")
-):
-    """
-    Enhance an image intelligently using RealESRGAN.
-    Automatically detects photo/anime and applies adaptive color and tone.
-    """
+def preload_models():
     try:
-        img_bytes = await file.read()
-        input_image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        input_np = np.array(input_image)
+        init_model("photo")
+        init_model("anime")
+        print("🚀 Preloaded 'photo' and 'anime' models.")
+    except Exception as e:
+        print(f"⚠️ Model preload warning: {e}")
 
-        # Auto or manual type selection
-        model_type = type.lower().strip()
-        if model_type == "auto":
-            model_type = detect_image_type(input_np)
-            print(f"🧭 Auto-detected image type: {model_type}")
 
-        if model_type not in MODELS:
-            raise HTTPException(status_code=400, detail="Invalid type. Use 'photo', 'anime', or 'auto'.")
+# === Core enhancement task ===
+async def process_enhancement(job_id: str, image_data: bytes, model: str, scale: int, denoise: float):
+    try:
+        await update_progress(job_id, 5)
+        img = Image.open(io.BytesIO(image_data)).convert("RGB")
+        input_np = np.array(img)
+        await update_progress(job_id, 20)
 
-        upsampler = upsamplers.get(model_type) or init_model(model_type)
+        # Choose model
+        if not model or model not in MODELS:
+            model = detect_image_type(input_np)
+            print(f"🔍 Auto-detected model: {model}")
+        else:
+            print(f"🎯 Using user-selected model: {model}")
 
-        # --- Enhancement ---
+        upsampler = upsamplers.get(model) or init_model(model)
+        await update_progress(job_id, 45)
+
+        # Upscale
         result = upsampler.enhance(input_np, outscale=scale, denoise=denoise)
         output_np = result[0] if isinstance(result, tuple) else result
-        output_image = Image.fromarray(output_np)
+        await update_progress(job_id, 75)
 
-        # --- Post-processing style tuning ---
-        if model_type == "photo":
-            # Natural, soft, realistic beauty
-            output_image = ImageEnhance.Color(output_image).enhance(1.05)
-            output_image = ImageEnhance.Contrast(output_image).enhance(1.02)
-            output_image = ImageEnhance.Sharpness(output_image).enhance(0.9)
-        elif model_type == "anime":
-            # Vibrant, sharp, high-contrast anime look
-            output_image = ImageEnhance.Contrast(output_image).enhance(1.15)
-            output_image = ImageEnhance.Color(output_image).enhance(1.25)
-            output_image = ImageEnhance.Sharpness(output_image).enhance(1.1)
+        # Gentle post-enhancement
+        out_img = Image.fromarray(output_np)
+        out_img = ImageEnhance.Color(out_img).enhance(1.05)
+        out_img = ImageEnhance.Contrast(out_img).enhance(1.02)
+        out_img = ImageEnhance.Sharpness(out_img).enhance(0.9)
 
-        # --- Return result ---
         buf = io.BytesIO()
-        output_image.save(buf, format="JPEG", quality=95)
+        out_img.save(buf, format="JPEG", quality=95)
         buf.seek(0)
+        RESULTS[job_id] = buf
+        await update_progress(job_id, 100)
+        print(f"✨ Job {job_id}: done (x{scale}, {model}).")
 
-        print(f"✨ {model_type.capitalize()} enhancement completed (x{scale}).")
-        return StreamingResponse(buf, media_type="image/jpeg")
-
+        asyncio.create_task(cleanup_job(job_id))
     except Exception as e:
-        print("❌ Enhancement error:")
+        traceback.print_exc()
+        PROGRESS[job_id] = -1
+        RESULTS[job_id] = str(e)
+
+
+# === Routes ===
+@router.post("/enhance/start")
+async def start_enhancement(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    scale: int = Query(4, ge=2, le=8),
+    model: str = Query(None, description="Force model: photo | anime | x4plus | x4"),
+    denoise: float = Query(0.5, ge=0.0, le=1.0)
+):
+    """Start enhancement job asynchronously."""
+    try:
+        job_id = str(uuid.uuid4())
+        PROGRESS[job_id] = 0
+        RESULTS[job_id] = None
+        img_bytes = await file.read()
+
+        background_tasks.add_task(process_enhancement, job_id, img_bytes, model, scale, denoise)
+        return JSONResponse({"job_id": job_id, "status": "started"})
+    except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/enhance/progress/{job_id}")
+async def get_progress(job_id: str):
+    """Check enhancement progress."""
+    progress = PROGRESS.get(job_id)
+    if progress is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if progress == -1:
+        return {"job_id": job_id, "status": "error", "error": RESULTS.get(job_id)}
+    return {"job_id": job_id, "progress": progress}
+
+
+@router.get("/enhance/result/{job_id}")
+async def get_result(job_id: str):
+    """Fetch completed enhanced image."""
+    if job_id not in RESULTS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if PROGRESS.get(job_id) != 100:
+        raise HTTPException(status_code=400, detail="Job not complete")
+
+    buf = RESULTS[job_id]
+    if isinstance(buf, str):
+        raise HTTPException(status_code=500, detail=buf)
+    return StreamingResponse(buf, media_type="image/jpeg")
